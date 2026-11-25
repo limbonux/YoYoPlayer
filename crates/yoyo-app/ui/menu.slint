@@ -1,0 +1,176 @@
+// Flat dark menus (S05, S05b, S08): #333 rows, a full-width blue
+// highlight, a check/icon column on the left, shortcuts on the right, and
+// submenus that open on hover. The rows come from Rust (src/menus.rs), so
+// every menu in the app shares this one look.
+
+import { Tokens } from "theme/tokens.slint";
+
+export struct MenuRow {
+    id: string,
+    text: string,
+    shortcut: string,
+    icon: image,
+    has-icon: bool,
+    checked: bool,
+    enabled: bool,
+    separator: bool,
+    submenu: int, // index into the groups, or -1
+}
+
+export struct MenuGroup {
+    rows: [MenuRow],
+}
+
+export enum MenuLook { grey, navy, toolbox }
+
+component MenuList inherits Rectangle {
+    in property <[MenuRow]> rows;
+    in property <MenuLook> look;
+    in property <int> open-sub: -1;
+    callback picked(string);
+    callback hover-row(int, length);
+
+    background: root.look == MenuLook.navy ? Tokens.menu-navy : Tokens.menu-bg;
+    border-width: 1px;
+    border-color: root.look == MenuLook.navy ? Tokens.menu-navy-edge : Tokens.menu-edge;
+    drop-shadow-blur: 10px;
+    drop-shadow-offset-y: 3px;
+    drop-shadow-color: #00000080;
+
+    VerticalLayout {
+        padding-top: root.look == MenuLook.navy ? 1px : Tokens.space-1;
+        padding-bottom: root.look == MenuLook.navy ? 1px : Tokens.space-1;
+        for row[i] in root.rows: Rectangle {
+            property <bool> is-header: !row.enabled && row.id == "header";
+            height: row.separator ? 9px : self.is-header ? 32px : root.look == MenuLook.navy ? 33px : Tokens.menu-row;
+            if row.separator: Rectangle {
+                x: Tokens.space-2;
+                width: parent.width - 2 * Tokens.space-2;
+                height: 1px;
+                background: Tokens.menu-separator;
+            }
+            if !row.separator && self.is-header: Rectangle {
+                Text {
+                    text: row.text;
+                    color: Tokens.menu-header;
+                    font-size: Tokens.type-small;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            if !row.separator && !self.is-header: row-box := Rectangle {
+                accessible-role: button;
+                accessible-label: row.text;
+                accessible-enabled: row.enabled;
+                property <bool> lit: row.enabled && (touch.has-hover || (root.open-sub == row.submenu && row.submenu >= 0));
+                background: !self.lit ? transparent : root.look == MenuLook.navy ? Tokens.menu-navy-hover : Tokens.accent;
+                // left column: icon or check
+                if row.has-icon: Image {
+                    x: Tokens.space-3;
+                    y: (parent.height - self.height) / 2;
+                    width: 15px;
+                    height: 15px;
+                    source: row.icon;
+                    colorize: !row.enabled ? Tokens.menu-ink-disabled : (row.checked && !row-box.lit) ? Tokens.accent : Tokens.menu-ink;
+                }
+                if !row.has-icon && row.checked: Image {
+                    x: Tokens.space-2;
+                    y: (parent.height - self.height) / 2;
+                    width: 14px;
+                    height: 14px;
+                    source: @image-url("icons/check.svg");
+                    colorize: Tokens.menu-ink;
+                }
+                Text {
+                    x: root.look == MenuLook.navy ? 14px : (row.has-icon ? 36px : Tokens.menu-text-x);
+                    width: parent.width - self.x - (row.shortcut != "" || row.submenu >= 0 ? Tokens.space-6 : Tokens.space-2);
+                    text: row.text;
+                    color: !row.enabled ? Tokens.menu-ink-disabled : (row.has-icon && row.checked && !row-box.lit) ? Tokens.accent : Tokens.menu-ink;
+                    font-size: Tokens.type-small;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                if row.shortcut != "": Text {
+                    x: parent.width - self.width - (root.look == MenuLook.navy ? 14px : Tokens.space-3);
+                    text: row.shortcut;
+                    color: row.enabled ? Tokens.menu-ink : Tokens.menu-ink-disabled;
+                    font-size: Tokens.type-small;
+                    vertical-alignment: center;
+                }
+                if row.submenu >= 0: Image {
+                    x: parent.width - self.width - Tokens.space-2;
+                    y: (parent.height - self.height) / 2;
+                    width: 13px;
+                    height: 13px;
+                    source: @image-url("icons/chevron-right.svg");
+                    colorize: row.enabled ? Tokens.menu-ink : Tokens.menu-ink-disabled;
+                }
+                touch := TouchArea {
+                    enabled: row.enabled;
+                    changed has-hover => {
+                        if (self.has-hover) { root.hover-row(i, parent.y); }
+                    }
+                    clicked => {
+                        if (row.submenu < 0) { root.picked(row.id); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component FlatMenu inherits PopupWindow {
+    in property <[MenuRow]> rows;
+    in property <[MenuGroup]> groups;
+    in property <MenuLook> look;
+    in property <length> menu-width: 200px;
+    in property <length> sub-width: 210px;
+    // where the menu sits in the window, to flip submenus that would run off the right edge
+    in property <length> space-right;
+    callback picked(string);
+
+    property <int> sub-index: -1;
+    property <length> sub-y;
+
+    close-policy: close-on-click-outside;
+    width: root.menu-width;
+    height: list.preferred-height;
+
+    list := MenuList {
+        width: root.menu-width;
+        rows: root.rows;
+        look: root.look;
+        open-sub: root.sub-index;
+        picked(id) => { root.picked(id); root.close(); }
+        hover-row(i, y) => {
+            if (root.rows[i].submenu >= 0) {
+                if (root.sub-index != root.rows[i].submenu) {
+                    sub.close();
+                    root.sub-index = root.rows[i].submenu;
+                    root.sub-y = y;
+                    sub.show();
+                }
+            } else if (root.sub-index >= 0) {
+                sub.close();
+                root.sub-index = -1;
+            }
+        }
+    }
+
+    sub := PopupWindow {
+        x: root.space-right - root.menu-width >= root.sub-width ? root.menu-width - 1px : -root.sub-width + 1px;
+        y: root.sub-y;
+        width: root.sub-width;
+        height: sub-list.preferred-height;
+        close-policy: close-on-click-outside;
+
+        sub-list := MenuList {
+            width: root.sub-width;
+            rows: root.sub-index >= 0 ? root.groups[root.sub-index].rows : [];
+            look: root.look;
+            picked(id) => { root.picked(id); sub.close(); root.close(); }
+        }
+    }
+}

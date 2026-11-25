@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/yoyo-app", "crates/yoyo-core", "crates/yoyo-engine"]
+
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace.dependencies]
+slint = "1.19"
+slint-build = "1.19"
+libloading = "0.9"
+rfd = "0.18"
+anyhow = "1"
+thiserror = "2"
+
+[profile.dev]
+debug = 0
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

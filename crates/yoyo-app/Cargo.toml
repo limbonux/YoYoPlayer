@@ -1,0 +1,22 @@
+[package]
+name = "yoyo-app"
+description = "YoYo Player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "yoyo"
+path = "src/main.rs"
+
+[dependencies]
+yoyo-engine = { path = "../yoyo-engine" }
+slint = { workspace = true, features = ["unstable-winit-030"] }
+yoyo-core = { path = "../yoyo-core" }
+rfd.workspace = true
+anyhow.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+winresource = "0.1"

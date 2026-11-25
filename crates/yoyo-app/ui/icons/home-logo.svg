@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="205" viewBox="0 0 120 205">
+  <!-- YoYo Player home mark: finger loop, string, and a yoyo whose string winds into a play triangle. -->
+  <!-- back half of the yoyo, seen slightly from the side -->
+  <circle cx="65" cy="133" r="52" fill="#005CA8"/>
+  <!-- front half -->
+  <circle cx="58" cy="133" r="52" fill="#0096FF"/>
+  <circle cx="58" cy="133" r="45" fill="none" stroke="#5CBCFF" stroke-width="1.5"/>
+  <circle cx="58" cy="133" r="37" fill="#0A2540"/>
+  <!-- finger loop and string, one stroke into the triangle -->
+  <circle cx="46" cy="14" r="8" fill="none" stroke="#FFFFFF" stroke-width="2.5"/>
+  <path d="M46 22 V152 L78 133 L46 114" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M46 114 V152 L78 133 Z" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="5" stroke-linejoin="round"/>
+</svg>

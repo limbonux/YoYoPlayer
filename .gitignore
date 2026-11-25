@@ -1,0 +1,29 @@
+# Internal docs and plans (local only)
+/docs/
+/remaster/
+/DESIGN.md
+
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Third-party binaries fetched by scripts/fetch-deps.ps1
+/third_party/mpv/
+/third_party/ffmpeg/
+
+# Generated test media
+/tests/media/
+
+# Packaging output
+/dist/
+
+# Local runtime data (portable mode)
+/data/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store

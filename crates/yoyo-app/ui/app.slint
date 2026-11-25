@@ -1,0 +1,1846 @@
+// YoYo Player, Phase 1: the core player.
+// mpv draws the video underneath (OpenGL underlay); everything here is drawn on top.
+// Screens: S01 home, S02 playback, S03 control bar, S04 playlist, S05 menus, S06 OSD, S08 toolbox, S14 control panel, S20 mini mode.
+
+import { Tokens } from "theme/tokens.slint";
+import { FlatMenu, MenuRow, MenuGroup, MenuLook } from "menu.slint";
+export { MenuRow, MenuGroup, MenuLook }
+export struct TrackItem {
+    id: int,
+    title: string,
+    selected: bool,
+}
+
+export struct PlaylistRow {
+    name: string,
+    duration: string,
+    current: bool,
+}
+
+// ---------------------------------------------------------------- primitives
+
+// Icon buttons have no background box on hover — only the icon glyph changes color.
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> tip;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    in property <length> glyph: Tokens.icon-size;
+    in property <bool> danger-hover;
+    in property <bool> blue;
+    callback clicked;
+    width: Tokens.icon-button-size;
+    height: Tokens.icon-button-size;
+    background: transparent;
+    accessible-role: button;
+    accessible-label: root.tip;
+    accessible-enabled: root.enabled;
+
+    Image {
+        source: root.icon;
+        width: root.glyph;
+        height: root.glyph;
+        colorize: !root.enabled ? Tokens.border-input
+            : root.danger-hover && touch.has-hover ? Tokens.danger
+            : root.blue ? (touch.pressed ? Tokens.accent.darker(15%) : touch.has-hover ? #33B0FF : Tokens.accent)
+            : root.active ? Tokens.accent
+            : touch.has-hover ? Tokens.accent : Tokens.ink-soft;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+component PlayButton inherits Rectangle {
+    in property <bool> playing;
+    in property <bool> enabled: true;
+    callback clicked;
+    width: Tokens.play-button-size;
+    height: Tokens.play-button-size;
+    background: transparent;
+    accessible-role: button;
+    accessible-label: root.playing ? "Pause" : "Play";
+
+    Image {
+        x: 0;
+        y: 0;
+        source: root.playing ? @image-url("icons/pause.svg") : @image-url("icons/play.svg");
+        width: parent.width;
+        height: parent.height;
+        colorize: !root.enabled ? Tokens.border-input : touch.pressed ? Tokens.accent.darker(15%) : touch.has-hover ? Tokens.accent-hover : Tokens.accent;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Vertical volume popup (40x104 with a 16x85 slider)
+component VolumeButtonWithPopup inherits Rectangle {
+    in property <float> volume; // 0..100 (or up to 150)
+    in property <bool> muted;
+    in property <length> glyph: 16px;
+    callback toggle-mute();
+    callback set-volume(float);
+    width: Tokens.icon-button-size;
+    height: Tokens.icon-button-size;
+    background: transparent;
+    property <bool> bridge-hover: false;
+    property <bool> pop-hover: false;
+    property <bool> slider-hover: false;
+    property <bool> slider-active: false;
+    property <bool> popup-open: btn-touch.has-hover || root.bridge-hover || root.pop-hover || root.slider-hover || root.slider-active;
+    property <float> ratio: root.muted ? 0 : Math.clamp(root.volume / 100.0, 0, 1);
+
+    // Invisible hover bridge between the button and the popup above it so the mouse can move smoothly into the popup
+    if root.popup-open: Rectangle {
+        x: (parent.width - 40px) / 2;
+        y: -16px;
+        width: 40px;
+        height: 20px;
+        background: transparent;
+        TouchArea {
+            changed has-hover => { root.bridge-hover = self.has-hover; }
+        }
+    }
+
+    // 40x104 floating popup above the volume button
+    if root.popup-open: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: -self.height - 8px;
+        width: 40px;
+        height: 104px;
+        background: #333333;
+
+        TouchArea {
+            changed has-hover => { root.pop-hover = self.has-hover; }
+        }
+
+        // sliderVolume (16x85 at margin-top 7px, centered horizontally)
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: 7px;
+            width: 16px;
+            height: 85px;
+
+            // Unfilled grey track
+            Image {
+                width: 16px;
+                height: 85px;
+                source: @image-url("icons/volume-bg.svg");
+            }
+
+            // Filled blue track from bottom up to thumb (clipped rectangle)
+            Rectangle {
+                x: 0;
+                y: 8px + (1.0 - root.ratio) * 69px;
+                width: 16px;
+                height: 85px - self.y;
+                clip: true;
+
+                Image {
+                    x: 0;
+                    y: -parent.y;
+                    width: 16px;
+                    height: 85px;
+                    source: @image-url("icons/volume-progress.svg");
+                }
+            }
+
+            // Thumb (16x16 ring)
+            Image {
+                x: 0;
+                y: (1.0 - root.ratio) * 69px;
+                width: 16px;
+                height: 16px;
+                source: @image-url("icons/volume-thumb.svg");
+            }
+
+            TouchArea {
+                mouse-cursor: pointer;
+                changed has-hover => { root.slider-hover = self.has-hover; }
+                changed pressed => { root.slider-active = self.pressed; }
+                function update-vol() {
+                    let r = Math.clamp(1.0 - (self.mouse-y - 8px) / 69px, 0, 1);
+                    root.set-volume(Math.round(r * 100.0));
+                }
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                        self.update-vol();
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        self.update-vol();
+                    }
+                }
+            }
+        }
+    }
+
+    Image {
+        source: root.muted || root.volume <= 0 ? @image-url("icons/mute.svg") : @image-url("icons/volume.svg");
+        width: root.glyph;
+        height: root.glyph;
+        colorize: btn-touch.pressed ? Tokens.accent.darker(15%) : (btn-touch.has-hover || root.popup-open) ? #33B0FF : Tokens.accent;
+    }
+
+    btn-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggle-mute(); }
+    }
+}
+
+// "hh:mm:ss" from seconds
+global Fmt {
+    public pure function hms(t: float) -> string {
+        let s = Math.max(0, Math.floor(t));
+        let h = Math.floor(s / 3600);
+        let m = Math.floor(Math.mod(s, 3600) / 60);
+        let ss = Math.mod(s, 60);
+        return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m + ":" + (ss < 10 ? "0" : "") + ss;
+    }
+}
+
+// Seek bar: sits flush on the top edge of the control bar, with the yoyo-ring thumb.
+component SeekBar inherits Rectangle {
+    in property <float> position;  // seconds
+    in property <float> duration;  // seconds
+    in property <bool> enabled;
+    callback seek(float);           // 0..1
+    height: Tokens.seek-hit;
+    accessible-role: slider;
+    accessible-value: Fmt.hms(root.position) + " / " + Fmt.hms(Math.round(root.duration));
+
+    property <float> progress: root.duration > 0 ? Math.clamp(root.position / root.duration, 0, 1) : 0;
+    property <float> hover-ratio: Math.clamp(touch.mouse-x / Math.max(1px, self.width), 0, 1);
+    property <length> track: touch.has-hover || touch.pressed ? Tokens.seek-track-hover : Tokens.seek-track;
+    animate track { duration: Tokens.motion-fast; }
+
+    // track along top edge
+    Rectangle {
+        y: (parent.height - root.track) / 2;
+        height: root.track;
+        background: Tokens.track;
+
+        Rectangle {
+            x: 0;
+            width: parent.width * root.progress;
+            background: Tokens.accent;
+        }
+    }
+    // seek thumb: the yoyo ring with a short string tail
+    if root.enabled: Image {
+        x: Math.clamp(parent.width * root.progress - self.width / 2, -6px, parent.width - self.width + 6px);
+        y: (parent.height - self.height) / 2;
+        width: 18px;
+        height: 18px;
+        source: touch.has-hover || touch.pressed ? @image-url("icons/seek-thumb-hover.svg") : @image-url("icons/seek-thumb-nor.svg");
+    }
+    // hover time preview box
+    if root.enabled && touch.has-hover && root.duration > 0: Rectangle {
+        property <length> w: 72px;
+        x: Math.clamp(touch.mouse-x - self.w / 2, 4px, parent.width - self.w - 4px);
+        y: -28px;
+        width: self.w;
+        height: 22px;
+        border-radius: Tokens.radius-sm;
+        background: Tokens.canvas;
+        border-width: 1px;
+        border-color: Tokens.border;
+
+        Text {
+            text: Fmt.hms(root.hover-ratio * root.duration);
+            color: Tokens.ink;
+            font-size: Tokens.type-time;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.seek(root.hover-ratio);
+            }
+        }
+        moved => {
+            if (self.pressed) { root.seek(root.hover-ratio); }
+        }
+    }
+}
+
+// Radio button for the control panel (S14)
+component CpRadio inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked;
+    height: 22px;
+    width: hbox.preferred-width;
+
+    hbox := HorizontalLayout {
+        spacing: 6px;
+
+        Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            border-width: 1.2px;
+            border-color: root.selected ? Tokens.accent : Tokens.ink-soft;
+            background: transparent;
+            if root.selected: Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: Tokens.accent;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: Tokens.ink;
+            font-size: Tokens.type-small;
+            vertical-alignment: center;
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Continuous slider for the control panel (S14)
+component CpSlider inherits Rectangle {
+    in property <float> value; // 0..1
+    callback changed(float);
+    height: 18px;
+
+    Rectangle {
+        y: (parent.height - 4px) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: Tokens.cp-track;
+
+        Rectangle {
+            x: 0;
+            width: parent.width * Math.clamp(root.value, 0, 1);
+            border-radius: 2px;
+            background: Tokens.accent;
+        }
+    }
+
+    Rectangle {
+        x: Math.clamp(parent.width * Math.clamp(root.value, 0, 1) - 6px, 0px, parent.width - 12px);
+        y: (parent.height - 12px) / 2;
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        background: Tokens.accent;
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.changed(Math.clamp(self.mouse-x / Math.max(1px, root.width), 0, 1));
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.changed(Math.clamp(self.mouse-x / Math.max(1px, root.width), 0, 1));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- the window
+
+export component App inherits Window {
+    title: root.file-name == "" ? "YoYo Player" : root.file-name + " - YoYo Player";
+    icon: @image-url("icons/logo.svg");
+    preferred-width: Tokens.window-width;
+    preferred-height: Tokens.window-height;
+    min-width: root.mini ? 320px : Tokens.window-width;
+    min-height: root.mini ? 180px : Tokens.window-height;
+    no-frame: true;
+    resize-border-width: 6px;
+    always-on-top: root.on-top;
+    background: transparent;
+    default-font-family: Tokens.font-text;
+    default-font-size: Tokens.type-small;
+
+    // state (set from Rust)
+    in property <bool> has-file;
+    in property <bool> playing;
+    in property <float> position;
+    in property <float> duration;
+    in property <float> speed: 1;
+    in property <float> volume: 80;
+    in property <bool> muted;
+    in property <string> osd-text;
+    in property <string> file-name;
+    in property <bool> fullscreen;
+    in property <bool> mini;
+    in property <bool> on-top;
+    in property <bool> controls-visible: true;
+    in property <bool> playlist-visible;
+    in-out property <bool> playlist-thumb-view: true; // S04 thumbnail view (default) vs list view
+    in-out property <bool> control-panel-visible: false; // S14 F4 Control Panel
+    in-out property <int> control-panel-tab: 0; // 0 Playback, 1 Video, 2 Effects, 3 Sound, 4 Subtitle Sync, 5 Subtitle style
+    in-out property <string> current-aspect: "no";
+    in property <bool> drop-hover;
+    in property <bool> autohide-windowed;
+    in property <int> play-mode: 1; // 0 single, 1 order, 2 loop all, 3 loop one, 4 random
+    in property <[PlaylistRow]> playlist;
+    in property <[TrackItem]> audio-tracks;
+    in property <[TrackItem]> sub-tracks;
+    in property <bool> sub-selected;
+    in-out property <bool> maximized-state <=> root.maximized;
+    in property <[MenuRow]> menu-rows;
+    in property <[MenuGroup]> menu-groups;
+    in property <MenuLook> menu-look;
+    in property <length> menu-width: 200px;
+    property <length> menu-x;
+    property <length> menu-y;
+    property <bool> logo-menu-open: false;
+    property <bool> open-dropdown-open: false;
+
+    // actions (handled in Rust)
+    callback open-file();
+    callback open-folder();
+    callback add-files();
+    callback toggle-pause();
+    callback stop();
+    callback seek-to(float);
+    callback seek-by(float);
+    callback volume-by(float);
+    callback set-volume(float);
+    callback toggle-mute();
+    callback speed-by(float);
+    callback set-speed(float);
+    callback speed-reset();
+    callback toggle-fullscreen();
+    callback toggle-mini();
+    callback toggle-on-top();
+    callback toggle-playlist();
+    callback toggle-autohide-windowed();
+    callback next();
+    callback previous();
+    callback play-index(int);
+    callback remove-index(int);
+    callback clear-playlist();
+    callback sort-playlist();
+    callback set-play-mode(int);
+    callback select-audio(int);
+    callback select-sub(int);
+    callback load-subtitle();
+    callback sub-scale-by(float);
+    callback sub-delay-by(float);
+    callback set-aspect(string);
+    callback rotate();
+    callback screenshot();
+    callback start-drag();
+    callback close-window();
+    callback about();
+    // menus: Slint asks Rust for the rows of a menu, Rust fills them and calls open-menu
+    callback request-menu(string, length, length);
+    callback menu-picked(string);
+    public function open-menu(x: length, y: length) {
+        root.menu-x = x;
+        root.menu-y = y;
+        popup.show();
+    }
+
+    property <bool> docked: !root.fullscreen && !root.mini;   // bars take space
+    property <bool> show-bars: root.docked ? (root.autohide-windowed ? root.controls-visible : true) : root.controls-visible;
+    property <bool> show-playlist: root.playlist-visible && !root.mini;
+    property <length> video-right-edge: root.width - (root.show-playlist ? Tokens.playlist-width : 0px);
+
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(e) => {
+            if (e.text == " ") { root.toggle-pause(); return accept; }
+            if (e.text == Key.RightArrow) { root.seek-by(e.modifiers.control ? 30 : 10); return accept; }
+            if (e.text == Key.LeftArrow) { root.seek-by(e.modifiers.control ? -30 : -10); return accept; }
+            if (e.text == Key.UpArrow) {
+                if (e.modifiers.control) { root.speed-by(0.1); } else if (e.modifiers.shift) { root.sub-scale-by(0.1); } else { root.volume-by(5); }
+                return accept;
+            }
+            if (e.text == Key.DownArrow) {
+                if (e.modifiers.control) { root.speed-by(-0.1); } else if (e.modifiers.shift) { root.sub-scale-by(-0.1); } else { root.volume-by(-5); }
+                return accept;
+            }
+            if (e.text == "c") { root.speed-by(0.1); return accept; }
+            if (e.text == "x") { root.speed-by(-0.1); return accept; }
+            if (e.text == "z" || e.text == "r") { root.speed-reset(); return accept; }
+            if (e.text == "m") { root.toggle-mute(); return accept; }
+            if (e.text == "t") { root.toggle-on-top(); return accept; }
+            if (e.text == "[") { root.sub-delay-by(-0.1); return accept; }
+            if (e.text == "]") { root.sub-delay-by(0.1); return accept; }
+            if (e.text == Key.PageDown) { root.next(); return accept; }
+            if (e.text == Key.PageUp) { root.previous(); return accept; }
+            if (e.text == Key.F3) { root.toggle-playlist(); return accept; }
+            if (e.text == Key.F4) { root.control-panel-visible = !root.control-panel-visible; return accept; }
+            if (e.text == Key.Return && e.modifiers.shift) { root.toggle-mini(); return accept; }
+            if (e.text == Key.Return || e.text == "f") { root.toggle-fullscreen(); return accept; }
+            if (e.text == Key.Escape) {
+                if (root.control-panel-visible) { root.control-panel-visible = false; }
+                else if (root.fullscreen) { root.toggle-fullscreen(); }
+                else if (root.mini) { root.toggle-mini(); }
+                return accept;
+            }
+            if (e.modifiers.control && e.text == "o") { root.open-file(); return accept; }
+            if (e.modifiers.control && e.text == "f") { root.open-folder(); return accept; }
+            if (e.modifiers.control && e.text == "s") { root.load-subtitle(); return accept; }
+            if (e.modifiers.alt && e.text == "a") { root.screenshot(); return accept; }
+            reject
+        }
+    }
+
+    // ---------------------------------------------------------- S01 home
+    if !root.has-file: Rectangle {
+        x: 0;
+        y: root.docked ? Tokens.title-bar-height : 0;
+        width: root.video-right-edge;
+        height: parent.height - (root.docked ? Tokens.title-bar-height + Tokens.control-bar-height : 0);
+        background: Tokens.video-bg;
+        clip: true;
+
+        // Home background: a soft glow with faint yoyo rings
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: @image-url("icons/home-bg.svg");
+            image-fit: cover;
+        }
+
+        border-width: root.drop-hover ? 1.5px : 0px;
+        border-color: Tokens.accent;
+
+        // Left-drag anywhere on home screen moves the window; right-click opens context menu
+        TouchArea {
+            clicked => {
+                root.open-dropdown-open = false;
+                root.control-panel-visible = false;
+            }
+            double-clicked => { root.open-file(); }
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                    root.open-dropdown-open = false;
+                    root.control-panel-visible = false;
+                    root.start-drag();
+                } else if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) {
+                    root.open-dropdown-open = false;
+                    root.request-menu("context", self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
+
+        // Centre block: the YoYo logo and the Open File split pill
+        Rectangle {
+            width: 220px;
+            height: 330px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2 + 18px;
+
+            Image {
+                x: (parent.width - self.width) / 2;
+                y: 0;
+                source: @image-url("icons/home-logo.svg");
+                width: Tokens.home-logo-width;
+                height: Tokens.home-logo-height;
+            }
+
+            // Open File split pill (150x40)
+            open-pill := Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: 200px;
+                width: Tokens.pill-width;
+                height: Tokens.pill-height;
+                property <bool> lit: pill-main.has-hover || pill-more.has-hover || root.open-dropdown-open;
+
+                Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: parent.lit ? @image-url("icons/pill-bg-hover.svg") : @image-url("icons/pill-bg-nor.svg");
+                }
+
+                // Left side: Open File button
+                Rectangle {
+                    x: 0;
+                    width: parent.width - 38px;
+                    height: parent.height;
+                    accessible-role: button;
+                    accessible-label: "Open File";
+
+                    Image {
+                        x: Tokens.space-6;
+                        y: (parent.height - self.height) / 2;
+                        width: Tokens.space-4;
+                        height: Tokens.space-4;
+                        source: @image-url("icons/open-file.svg");
+                        colorize: pill-main.has-hover ? Tokens.accent : Tokens.ink;
+                    }
+
+                    Text {
+                        x: Tokens.space-6 + Tokens.space-4 + Tokens.space-1;
+                        height: parent.height;
+                        text: "Open File";
+                        color: pill-main.has-hover ? Tokens.accent : Tokens.ink;
+                        font-size: Tokens.type-small;
+                        vertical-alignment: center;
+                    }
+
+                    pill-main := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.open-dropdown-open = false;
+                            root.open-file();
+                        }
+                    }
+                }
+
+                // Vertical 1x13 separator at right=38px
+                Rectangle {
+                    x: parent.width - 38px;
+                    y: (parent.height - 13px) / 2;
+                    width: 1px;
+                    height: 13px;
+                    background: #FFFFFF26;
+                }
+
+                // Right side: dropdown arrow button
+                Rectangle {
+                    x: parent.width - 37px;
+                    width: 37px;
+                    height: parent.height;
+                    accessible-role: button;
+                    accessible-label: "More ways to open";
+
+                    Image {
+                        x: (parent.width - self.width) / 2 - 1px;
+                        y: (parent.height - self.height) / 2;
+                        source: root.open-dropdown-open ? @image-url("icons/pill-arrow-up.svg") : @image-url("icons/pill-arrow.svg");
+                        width: Tokens.pill-arrow-width;
+                        height: Tokens.pill-arrow-height;
+                        colorize: (pill-more.has-hover || root.open-dropdown-open) ? Tokens.accent : Tokens.ink;
+                    }
+
+                    pill-more := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.open-dropdown-open = true;
+                            root.request-menu("open", open-pill.absolute-position.x, open-pill.absolute-position.y + open-pill.height + 2px);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- S02 video surface + S05 context menu
+    if root.has-file: TouchArea {
+        x: 0;
+        y: root.docked ? Tokens.title-bar-height : 0;
+        width: root.video-right-edge;
+        height: parent.height - (root.docked ? Tokens.title-bar-height + Tokens.control-bar-height : 0);
+        property <length> down-x;
+        property <length> down-y;
+        property <bool> dragged: false;
+        clicked => {
+            if (!self.dragged) {
+                if (root.control-panel-visible) {
+                    root.control-panel-visible = false;
+                } else {
+                    root.toggle-pause();
+                }
+            }
+        }
+        double-clicked => { root.toggle-fullscreen(); }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                self.down-x = self.mouse-x;
+                self.down-y = self.mouse-y;
+                self.dragged = false;
+            } else if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) {
+                root.request-menu("context", self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+        moved => {
+            if (self.pressed && !self.dragged && !root.fullscreen) {
+                if (Math.abs(self.mouse-x - self.down-x) > 4px || Math.abs(self.mouse-y - self.down-y) > 4px) {
+                    self.dragged = true;
+                    root.start-drag();
+                }
+            }
+        }
+        scroll-event(e) => {
+            if (e.delta-y > 0) { root.volume-by(5); } else if (e.delta-y < 0) { root.volume-by(-5); }
+            accept
+        }
+    }
+
+    // ---------------------------------------------------------- Playlist toggle tab ()
+    if !root.mini && (root.controls-visible || root.show-playlist): Rectangle {
+        x: root.video-right-edge - self.width;
+        y: (parent.height - self.height) / 2;
+        width: 18px;
+        height: 48px;
+        accessible-role: button;
+        accessible-label: root.playlist-visible ? "Hide playlist" : "Show playlist";
+
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.playlist-visible
+                ? (slide-touch.has-hover ? @image-url("icons/side-open-hover.svg") : @image-url("icons/side-open-nor.svg"))
+                : (slide-touch.has-hover ? @image-url("icons/side-close-hover.svg") : @image-url("icons/side-close-nor.svg"));
+        }
+
+        slide-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.toggle-playlist(); }
+        }
+    }
+
+    // ---------------------------------------------------------- S04 playlist panel
+    if root.show-playlist: Rectangle {
+        x: parent.width - self.width;
+        y: root.docked ? Tokens.title-bar-height : 0;
+        width: Tokens.playlist-width;
+        height: parent.height - (root.docked ? Tokens.title-bar-height + Tokens.control-bar-height : 0);
+        background: Tokens.canvas;
+
+        // Right-click on empty area of playlist opens playlist menu
+        TouchArea {
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) {
+                    root.request-menu("playlist", self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
+
+        VerticalLayout {
+            // 45px header with 4 right-aligned icons (no "Playlist N" title text)
+            Rectangle {
+                height: Tokens.playlist-header;
+
+                TouchArea {
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left && !root.fullscreen) {
+                            root.start-drag();
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    padding-left: Tokens.space-3;
+                    padding-right: 11px;
+                    spacing: 8px;
+                    alignment: end;
+
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        width: 24px;
+                        height: 24px;
+                        glyph: 15px;
+                        icon: root.playlist-thumb-view ? @image-url("icons/view-list.svg") : @image-url("icons/view-thumb.svg");
+                        tip: root.playlist-thumb-view ? "Switch to List View" : "Switch to Thumbnail View";
+                        clicked => { root.playlist-thumb-view = !root.playlist-thumb-view; }
+                    }
+
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        width: 24px;
+                        height: 24px;
+                        glyph: 15px;
+                        icon: root.play-mode == 0 ? @image-url("icons/mode-single.svg")
+                            : root.play-mode == 2 ? @image-url("icons/mode-loop-all.svg")
+                            : root.play-mode == 3 ? @image-url("icons/mode-loop-one.svg")
+                            : root.play-mode == 4 ? @image-url("icons/mode-random.svg")
+                            : @image-url("icons/mode-order.svg");
+                        tip: "Play Mode";
+                        clicked => { root.request-menu("mode", self.absolute-position.x - 40px, self.absolute-position.y + self.height + 4px); }
+                    }
+
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        width: 24px;
+                        height: 24px;
+                        glyph: 15px;
+                        icon: @image-url("icons/plus.svg");
+                        tip: "Add Files";
+                        clicked => { root.add-files(); }
+                    }
+
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        width: 24px;
+                        height: 24px;
+                        glyph: 15px;
+                        icon: @image-url("icons/trash.svg");
+                        tip: "Clear The PlayList";
+                        enabled: root.playlist.length > 0;
+                        clicked => { root.clear-playlist(); }
+                    }
+                }
+            }
+
+            // Playlist rows (supports both 70px Thumbnail View and 36px List View)
+            Flickable {
+                property <length> row-h: root.playlist-thumb-view ? Tokens.playlist-thumb-row : Tokens.playlist-row;
+                content-height: root.playlist.length * self.row-h;
+                for row[i] in root.playlist: Rectangle {
+                    y: i * parent.row-h;
+                    height: parent.row-h;
+                    width: parent.width;
+                    background: row.current ? Tokens.surface-2 : row-touch.has-hover ? Tokens.surface : transparent;
+                    accessible-role: list-item;
+                    accessible-label: row.name;
+
+                    if row.current: Rectangle {
+                        x: 0;
+                        width: 3px;
+                        background: Tokens.accent;
+                    }
+
+                    row-touch := TouchArea {
+                        double-clicked => { root.play-index(i); }
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.up && e.button == PointerEventButton.right) {
+                                root.request-menu("row:" + i, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                            }
+                        }
+                    }
+
+                    // Mode A: 70px Thumbnail View (72x54 16:9 card with bottom-left duration badge + 2-line title)
+                    if root.playlist-thumb-view: HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 12px;
+                        spacing: 10px;
+
+                        Rectangle {
+                            y: (parent.height - self.height) / 2;
+                            width: Tokens.thumb-width;
+                            height: Tokens.thumb-height;
+                            background: #080808;
+
+                            Image {
+                                width: parent.width;
+                                height: parent.height;
+                                source: @image-url("icons/video-thumb-default.svg");
+                            }
+
+                            if row.duration != "": Rectangle {
+                                x: 0;
+                                y: parent.height - 15px;
+                                width: 48px;
+                                height: 15px;
+                                background: Tokens.badge-bg;
+
+                                Text {
+                                    text: row.duration;
+                                    color: #CCCCCC;
+                                    font-size: Tokens.type-tiny;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: row.name;
+                            color: row.current ? Tokens.accent : #CCCCCC;
+                            font-size: Tokens.type-small;
+                            wrap: word-wrap;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+
+                        if row-touch.has-hover: IconButton {
+                            width: 20px;
+                            height: 20px;
+                            y: (parent.height - self.height) / 2;
+                            glyph: 14px;
+                            icon: @image-url("icons/row-delete.svg");
+                            tip: "Delete";
+                            clicked => { root.remove-index(i); }
+                        }
+                    }
+
+                    // Mode B: 36px Pure Word List View (filename on left, duration or hover X on right)
+                    if !root.playlist-thumb-view: HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 12px;
+                        spacing: 8px;
+
+                        Text {
+                            text: row.name;
+                            color: row.current ? Tokens.accent : #CCCCCC;
+                            font-size: Tokens.type-small;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+
+                        if !row-touch.has-hover && row.duration != "": Text {
+                            width: 52px;
+                            text: row.duration;
+                            color: row.current ? Tokens.accent : Tokens.ink-soft;
+                            font-size: Tokens.type-time;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+                        if row-touch.has-hover: IconButton {
+                            width: 20px;
+                            height: 20px;
+                            y: (parent.height - self.height) / 2;
+                            glyph: 14px;
+                            icon: @image-url("icons/row-delete.svg");
+                            tip: "Delete";
+                            clicked => { root.remove-index(i); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- S14 Control Panel ("播放效果调节" / F4 floating popup)
+    if root.control-panel-visible && !root.mini: Rectangle {
+        x: Math.max(8px, root.video-right-edge - self.width - 8px);
+        y: parent.height - (root.docked ? Tokens.control-bar-height : 0px) - self.height - 4px;
+        width: Tokens.cp-width;
+        height: Tokens.cp-height;
+        background: Tokens.cp-body;
+        border-width: 1px;
+        border-color: Tokens.cp-border;
+        drop-shadow-blur: 14px;
+        drop-shadow-color: #00000090;
+
+        TouchArea { } // absorb clicks inside panel
+
+        HorizontalLayout {
+            // Left tab rail (84px wide, #333333)
+            Rectangle {
+                width: Tokens.cp-rail-width;
+                background: Tokens.cp-rail;
+
+                VerticalLayout {
+                    padding-top: 16px;
+                    spacing: 2px;
+                    for tab-name[idx] in ["Playback", "Video", "Effects", "Sound", "Subtitle Sync", "Subtitle style"]: Rectangle {
+                        height: 36px;
+                        background: root.control-panel-tab == idx ? Tokens.accent : tab-ta.has-hover ? #3D3D3D : transparent;
+
+                        Text {
+                            text: tab-name;
+                            color: root.control-panel-tab == idx ? Tokens.on-accent : Tokens.ink;
+                            font-size: 11.5px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        tab-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.control-panel-tab = idx; }
+                        }
+                    }
+                }
+            }
+
+            // Right tab content area
+            Rectangle {
+                background: Tokens.cp-body;
+                // Tab 0: Playback (Fast Forward/Rewind & Playback Speed slider)
+                if root.control-panel-tab == 0: VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+
+                    Text {
+                        text: "Fast Forward / Rewind";
+                        color: Tokens.ink;
+                        font-weight: 700;
+                        font-size: Tokens.type-small;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 24px;
+
+                        CpRadio {
+                            label: "5s";
+                            selected: false;
+                            clicked => { root.seek-by(5); }
+                        }
+
+                        CpRadio {
+                            label: "10s";
+                            selected: true;
+                            clicked => { root.seek-by(10); }
+                        }
+
+                        CpRadio {
+                            label: "30s";
+                            selected: false;
+                            clicked => { root.seek-by(30); }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 6px;
+                    }
+
+                    Text {
+                        text: "Playback Speed";
+                        color: Tokens.ink;
+                        font-weight: 700;
+                        font-size: Tokens.type-small;
+                    }
+
+                    CpSlider {
+                        value: (root.speed - 0.5) / 1.5;
+                        changed(v) => { root.set-speed(0.5 + v * 1.5); }
+                    }
+
+                    HorizontalLayout {
+                        alignment: space-between;
+
+                        Text {
+                            text: "0.5x";
+                            color: Tokens.ink;
+                            font-size: 11px;
+                        }
+
+                        Text {
+                            text: "1x";
+                            color: Tokens.ink;
+                            font-size: 11px;
+                        }
+
+                        Text {
+                            text: "1.5x";
+                            color: Tokens.ink;
+                            font-size: 11px;
+                        }
+
+                        Text {
+                            text: "2x";
+                            color: Tokens.ink;
+                            font-size: 11px;
+                        }
+                    }
+
+                    Rectangle { }
+
+                    HorizontalLayout {
+                        alignment: end;
+
+                        Rectangle {
+                            width: 64px;
+                            height: 24px;
+                            border-radius: 2px;
+                            border-width: 1px;
+                            border-color: rst0.has-hover ? Tokens.accent : Tokens.cp-border;
+
+                            Text {
+                                text: "Reset";
+                                color: Tokens.ink;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            rst0 := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.speed-reset(); }
+                            }
+                        }
+                    }
+                }
+
+                // Tab 1: Video (Aspect Ratio & Rotate)
+                if root.control-panel-tab == 1: VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+
+                    Text {
+                        text: "Aspect Ratio";
+                        color: Tokens.ink;
+                        font-weight: 700;
+                        font-size: Tokens.type-small;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        CpRadio {
+                            label: "Default";
+                            selected: root.current-aspect == "no";
+                            clicked => { root.current-aspect = "no"; root.set-aspect("no"); }
+                        }
+
+                        CpRadio {
+                            label: "4:3";
+                            selected: root.current-aspect == "4:3";
+                            clicked => { root.current-aspect = "4:3"; root.set-aspect("4:3"); }
+                        }
+
+                        CpRadio {
+                            label: "16:9";
+                            selected: root.current-aspect == "16:9";
+                            clicked => { root.current-aspect = "16:9"; root.set-aspect("16:9"); }
+                        }
+
+                        CpRadio {
+                            label: "21:9";
+                            selected: root.current-aspect == "2.33:1";
+                            clicked => { root.current-aspect = "2.33:1"; root.set-aspect("2.33:1"); }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 6px;
+                    }
+
+                    Text {
+                        text: "Video Rotate";
+                        color: Tokens.ink;
+                        font-weight: 700;
+                        font-size: Tokens.type-small;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 16px;
+
+                        Rectangle {
+                            width: 105px;
+                            height: 26px;
+                            border-width: 1px;
+                            border-color: rot-ta.has-hover ? Tokens.accent : Tokens.cp-border;
+
+                            Text {
+                                text: "↻ Rotate Right";
+                                color: Tokens.ink;
+                                font-size: 11.5px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            rot-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.rotate(); }
+                            }
+                        }
+                    }
+
+                    Rectangle { }
+
+                    HorizontalLayout {
+                        alignment: end;
+
+                        Rectangle {
+                            width: 64px;
+                            height: 24px;
+                            border-width: 1px;
+                            border-color: rst1.has-hover ? Tokens.accent : Tokens.cp-border;
+
+                            Text {
+                                text: "Reset";
+                                color: Tokens.ink;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            rst1 := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.current-aspect = "no"; root.set-aspect("no"); }
+                            }
+                        }
+                    }
+                }
+
+                // Tab 2: Effects (Color adjustment)
+                if root.control-panel-tab == 2: VerticalLayout {
+                    padding: 18px;
+                    spacing: 10px;
+
+                    Text {
+                        text: "Color Adjustment";
+                        color: Tokens.ink;
+                        font-weight: 700;
+                        font-size: Tokens.type-small;
+                    }
+
+                    for lbl in ["Brightness", "Contrast", "Saturation", "Hue"]: HorizontalLayout {
+                        spacing: 10px;
+
+                        Text {
+                            width: 68px;
+                            text: lbl;
+                            color: Tokens.ink;
+                            font-size: 11.5px;
+                            vertical-alignment: center;
+                        }
+
+                        CpSlider {
+                            value: 0.5;
+                        }
+                    }
+                    Rectangle { }
+                }
+
+                // Tab 3: Sound (Volume & Audio Track)
+                if root.control-panel-tab == 3: VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+
+                    Text {
+                        text: "Volume";
+                        color: Tokens.ink;
+                        font-weight: 700;
+                        font-size: Tokens.type-small;
+                    }
+
+                    CpSlider {
+                        value: root.volume / 150.0;
+                        changed(v) => { root.set-volume(v * 150.0); }
+                    }
+
+                    HorizontalLayout {
+                        alignment: space-between;
+
+                        Text {
+                            text: "Mute";
+                            color: Tokens.ink;
+                            font-size: 11px;
+                        }
+
+                        Text {
+                            text: "100%";
+                            color: Tokens.ink;
+                            font-size: 11px;
+                        }
+
+                        Text {
+                            text: "150%";
+                            color: Tokens.ink;
+                            font-size: 11px;
+                        }
+                    }
+
+                    Rectangle {
+                        height: 6px;
+                    }
+
+                    Text {
+                        text: "Audio Control";
+                        color: Tokens.ink;
+                        font-weight: 700;
+                        font-size: Tokens.type-small;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+
+                        Rectangle {
+                            width: 80px;
+                            height: 24px;
+                            border-width: 1px;
+                            border-color: Tokens.cp-border;
+
+                            Text {
+                                text: root.muted ? "Unmute" : "Mute";
+                                color: Tokens.ink;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.toggle-mute(); }
+                            }
+                        }
+                    }
+
+                    Rectangle { }
+                }
+
+                // Tab 4 & 5: Subtitle Sync & Style
+                if root.control-panel-tab == 4 || root.control-panel-tab == 5: VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+
+                    Text {
+                        text: "Primary Subtitle";
+                        color: Tokens.ink;
+                        font-weight: 700;
+                        font-size: Tokens.type-small;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        Rectangle {
+                            height: 24px;
+                            background: Tokens.cp-input;
+                            border-width: 1px;
+                            border-color: Tokens.cp-border;
+
+                            Text {
+                                x: 8px;
+                                text: root.sub-selected ? "Active subtitle track" : "No subtitle chosen";
+                                color: Tokens.ink;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Rectangle {
+                            width: 48px;
+                            height: 24px;
+                            border-width: 1px;
+                            border-color: ld-ta.has-hover ? Tokens.accent : Tokens.cp-border;
+
+                            Text {
+                                text: "Load";
+                                color: Tokens.ink;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            ld-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.load-subtitle(); }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "Synchronization & Size";
+                        color: Tokens.ink;
+                        font-weight: 700;
+                        font-size: Tokens.type-small;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        Rectangle {
+                            width: 72px;
+                            height: 24px;
+                            border-width: 1px;
+                            border-color: Tokens.cp-border;
+
+                            Text {
+                                text: "−0.1 s";
+                                color: Tokens.ink;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.sub-delay-by(-0.1); }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 72px;
+                            height: 24px;
+                            border-width: 1px;
+                            border-color: Tokens.cp-border;
+
+                            Text {
+                                text: "+0.1 s";
+                                color: Tokens.ink;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.sub-delay-by(0.1); }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 44px;
+                            height: 24px;
+                            border-width: 1px;
+                            border-color: Tokens.cp-border;
+
+                            Text {
+                                text: "A−";
+                                color: Tokens.ink;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.sub-scale-by(-0.1); }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 44px;
+                            height: 24px;
+                            border-width: 1px;
+                            border-color: Tokens.cp-border;
+
+                            Text {
+                                text: "A+";
+                                color: Tokens.ink;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.sub-scale-by(0.1); }
+                            }
+                        }
+                    }
+
+                    Rectangle { }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- S06 OSD (matches PlayerTipsWnd / TopTipsWnd)
+    if root.osd-text != "": Rectangle {
+        x: 22px;
+        y: parent.height - (root.show-bars || root.docked ? Tokens.control-bar-height : 0) - self.height - 20px;
+        width: osd-label.preferred-width + 32px;
+        height: Tokens.osd-height;
+        border-radius: Tokens.radius-sm;
+        background: #141926D8;
+        border-width: 1px;
+        border-color: #243048;
+
+        osd-label := Text {
+            text: root.osd-text;
+            color: Tokens.ink;
+            font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // ---------------------------------------------------------- S02 Title Bar
+    if !root.fullscreen: Rectangle {
+        y: 0;
+        height: Tokens.title-bar-height;
+        opacity: root.mini ? (root.controls-visible ? 1 : 0) : 1;
+        animate opacity { duration: Tokens.motion-base; }
+        background: root.mini ? Tokens.scrim-top : Tokens.canvas;
+
+        // Centred title + window drag area
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+
+            Text {
+                x: 130px;
+                width: parent.width - 280px;
+                text: root.file-name;
+                color: Tokens.title-ink;
+                font-size: Tokens.type-title;
+                overflow: elide;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            TouchArea {
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) { root.start-drag(); }
+                }
+                double-clicked => { root.maximized-state = !root.maximized-state; }
+            }
+        }
+
+        // Left: menuBtn (margin-left 20px, no hover box, turns blue on hover)
+        if !root.mini: Rectangle {
+            x: 20px;
+            y: 0;
+            width: logo-row.preferred-width;
+            height: parent.height;
+            accessible-role: button;
+            accessible-label: "Main menu";
+
+            logo-row := HorizontalLayout {
+                spacing: 5px;
+                alignment: start;
+
+                Text {
+                    text: "YoYoPlayer";
+                    color: logo-touch.has-hover ? Tokens.accent : Tokens.ink;
+                    font-family: Tokens.font-display;
+                    font-size: Tokens.title-logo;
+                    vertical-alignment: center;
+                }
+
+                Image {
+                    source: @image-url("icons/chevron-down.svg");
+                    width: 8px;
+                    height: 5px;
+                    y: (parent.height - self.height) / 2 + 1px;
+                    colorize: logo-touch.has-hover ? Tokens.accent : Tokens.ink;
+                }
+            }
+
+            logo-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.open-dropdown-open = false;
+                    root.request-menu("logo", 20px, Tokens.title-bar-height);
+                }
+            }
+        }
+
+        // Mini mode left filename
+        if root.mini: Text {
+            x: 16px;
+            width: parent.width - 170px;
+            text: root.file-name;
+            color: Tokens.ink;
+            font-size: Tokens.type-title;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+
+        // Right: window buttons (Mini Mode, Always on Top Pin, Minimize, Maximize, Close)
+        HorizontalLayout {
+            x: parent.width - self.preferred-width - 12px;
+            height: parent.height;
+            spacing: 0px;
+
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                width: 16px;
+                height: 16px;
+                glyph: 16px;
+                icon: root.mini ? @image-url("icons/normalmode.svg") : @image-url("icons/mini.svg");
+                tip: root.mini ? "Normal Mode" : "Mini Mode";
+                active: root.mini;
+                clicked => { root.toggle-mini(); }
+            }
+
+            Rectangle {
+                width: 22px;
+            }
+
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                width: 16px;
+                height: 16px;
+                glyph: 16px;
+                icon: root.on-top ? @image-url("icons/pin-on.svg") : @image-url("icons/pin.svg");
+                tip: root.on-top ? "Disable Always On Top" : "Always On Top";
+                active: root.on-top;
+                clicked => { root.toggle-on-top(); }
+            }
+
+            Rectangle {
+                width: 12px;
+            }
+
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                width: 32px;
+                height: 32px;
+                glyph: 16px;
+                icon: @image-url("icons/minimize.svg");
+                tip: "Minimize";
+                clicked => { root.minimized = true; }
+            }
+
+            Rectangle {
+                width: 2px;
+            }
+
+            if !root.mini: IconButton {
+                y: (parent.height - self.height) / 2;
+                width: 32px;
+                height: 32px;
+                glyph: 16px;
+                icon: root.maximized-state ? @image-url("icons/restore.svg") : @image-url("icons/maximize.svg");
+                tip: root.maximized-state ? "Restore" : "Maximize";
+                clicked => { root.maximized-state = !root.maximized-state; }
+            }
+
+            if !root.mini: Rectangle {
+                width: 2px;
+            }
+
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                width: 32px;
+                height: 32px;
+                glyph: 16px;
+                icon: @image-url("icons/close.svg");
+                tip: "Close";
+                danger-hover: true;
+                clicked => { root.close-window(); }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- S03 Control Bar
+    Rectangle {
+        y: parent.height - self.height;
+        height: Tokens.control-bar-height;
+        visible: !root.mini || root.controls-visible;
+        opacity: root.show-bars ? 1 : 0;
+        animate opacity { duration: Tokens.motion-base; }
+        background: root.docked ? Tokens.canvas : Tokens.scrim;
+
+        // Dragging empty areas of the bottom control bar also drags the window
+        TouchArea {
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left && !root.fullscreen) {
+                    root.open-dropdown-open = false;
+                    root.start-drag();
+                }
+            }
+        }
+
+        // SeekBar only visible when a file is loaded (hidden on the home screen)
+        if root.has-file: SeekBar {
+            x: 0;
+            y: -Tokens.seek-hit / 2 + 2px;
+            width: parent.width;
+            position: root.position;
+            duration: root.duration;
+            enabled: root.has-file && root.duration > 0;
+            seek(p) => { root.seek-to(p); }
+        }
+
+        // Left: Time display (margin-left 20px, ONLY visible when a file is loaded, matching static_time hidden="true" on home)
+        if root.has-file: HorizontalLayout {
+            x: 20px;
+            height: parent.height;
+            spacing: 8px;
+
+            Text {
+                text: Fmt.hms(root.position) + " / " + Fmt.hms(Math.round(root.duration));
+                color: Tokens.time-ink;
+                font-size: Tokens.type-time;
+                vertical-alignment: center;
+            }
+
+            if root.speed < 0.99 || root.speed > 1.01: Rectangle {
+                width: speed-text.preferred-width + 10px;
+                y: (parent.height - 18px) / 2;
+                height: 18px;
+                border-radius: Tokens.radius-sm;
+                background: Tokens.surface-2;
+                accessible-role: button;
+                accessible-label: "Speed " + speed-text.text + ", reset to normal";
+
+                speed-text := Text {
+                    text: Math.round(root.speed * 10) / 10 + "×";
+                    color: Tokens.accent;
+                    font-size: 10px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.speed-reset(); }
+                }
+            }
+        }
+
+        // Centre: Transport controls (Stop, Previous, Play ring, Next, Volume — all bright blue #0096FF even on empty home screen!)
+        if !root.mini: HorizontalLayout {
+            x: (parent.width - self.preferred-width) / 2;
+            height: parent.height;
+            spacing: 0px;
+
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: 16px;
+                icon: @image-url("icons/stop.svg");
+                blue: true;
+                tip: "Stop";
+                clicked => { root.stop(); }
+            }
+
+            Rectangle {
+                width: 6px;
+            }
+
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: 16px;
+                icon: @image-url("icons/prev.svg");
+                blue: true;
+                tip: "Previous";
+                clicked => { root.previous(); }
+            }
+
+            Rectangle {
+                width: 15px;
+            }
+
+            PlayButton {
+                y: (parent.height - self.height) / 2;
+                playing: root.playing;
+                clicked => { if (root.has-file) { root.toggle-pause(); } else { root.open-file(); } }
+            }
+
+            Rectangle {
+                width: 15px;
+            }
+
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: 16px;
+                icon: @image-url("icons/next.svg");
+                blue: true;
+                tip: "Next";
+                clicked => { root.next(); }
+            }
+
+            Rectangle {
+                width: 12px;
+            }
+
+            VolumeButtonWithPopup {
+                y: (parent.height - self.height) / 2;
+                glyph: 16px;
+                volume: root.volume;
+                muted: root.muted;
+                toggle-mute => { root.toggle-mute(); }
+                set-volume(v) => { root.set-volume(v); }
+            }
+        }
+
+        // Mini mode compact left transport
+        if root.mini: HorizontalLayout {
+            x: 16px;
+            height: parent.height;
+            spacing: 8px;
+
+            PlayButton {
+                y: (parent.height - self.height) / 2;
+                playing: root.playing;
+                clicked => { if (root.has-file) { root.toggle-pause(); } else { root.open-file(); } }
+            }
+
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: Tokens.prev-next-size;
+                icon: @image-url("icons/prev.svg");
+                blue: true;
+                tip: "Previous";
+                clicked => { root.previous(); }
+            }
+
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: Tokens.prev-next-size;
+                icon: @image-url("icons/next.svg");
+                blue: true;
+                tip: "Next";
+                clicked => { root.next(); }
+            }
+
+            VolumeButtonWithPopup {
+                y: (parent.height - self.height) / 2;
+                glyph: 15px;
+                volume: root.volume;
+                muted: root.muted;
+                toggle-mute => { root.toggle-mute(); }
+                set-volume(v) => { root.set-volume(v); }
+            }
+
+            if root.has-file: Text {
+                text: Fmt.hms(root.position) + " / " + Fmt.hms(Math.round(root.duration));
+                color: Tokens.time-ink;
+                font-size: Tokens.type-time;
+                vertical-alignment: center;
+            }
+        }
+
+        // Right: Toolbox Menu, Control Panel (F4), Full Screen
+        HorizontalLayout {
+            x: parent.width - self.preferred-width - 19px;
+            height: parent.height;
+            spacing: 20px;
+            if !root.mini: IconButton {
+                y: (parent.height - self.height) / 2;
+                width: 16px;
+                height: 16px;
+                glyph: 16px;
+                icon: @image-url("icons/toolbox.svg");
+                tip: "Toolbox Menu";
+                clicked => {
+                    root.open-dropdown-open = false;
+                    root.request-menu("toolbox", self.absolute-position.x - 48px, self.absolute-position.y - 288px);
+                }
+            }
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                width: 16px;
+                height: 16px;
+                glyph: 16px;
+                icon: @image-url("icons/sliders.svg");
+                tip: "Control Panel (F4)";
+                active: root.control-panel-visible;
+                clicked => {
+                    root.open-dropdown-open = false;
+                    root.control-panel-visible = !root.control-panel-visible;
+                }
+            }
+
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                width: 16px;
+                height: 16px;
+                glyph: 16px;
+                icon: root.fullscreen ? @image-url("icons/fullscreen-exit.svg") : @image-url("icons/fullscreen.svg");
+                tip: root.fullscreen ? "Exit Full Screen" : "Full Screen";
+                clicked => {
+                    root.open-dropdown-open = false;
+                    root.toggle-fullscreen();
+                }
+            }
+        }
+    }
+
+    popup := FlatMenu {
+        x: Math.max(0px, Math.min(root.menu-x, root.width - root.menu-width - 4px));
+        y: Math.max(0px, Math.min(root.menu-y, root.height - self.height - 4px));
+        rows: root.menu-rows;
+        groups: root.menu-groups;
+        look: root.menu-look;
+        menu-width: root.menu-width;
+        space-right: root.width - self.x;
+        picked(id) => {
+            root.open-dropdown-open = false;
+            root.menu-picked(id);
+        }
+    }
+}

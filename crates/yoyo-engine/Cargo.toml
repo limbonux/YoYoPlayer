@@ -1,0 +1,11 @@
+[package]
+name = "yoyo-engine"
+description = "libmpv wrapper for YoYo Player: playback control and OpenGL rendering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+libloading.workspace = true
+thiserror.workspace = true

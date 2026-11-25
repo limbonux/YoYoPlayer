@@ -1,0 +1,120 @@
+// Design tokens: every colour, size and type style the screens use.
+// Do not put raw colours or sizes in components; add them here.
+
+export global Tokens {
+    // colours (dark)
+    out property <color> canvas: #111111;
+    out property <color> surface: #1B1B1B;
+    out property <color> surface-2: #262626;
+    out property <color> ink: #DCDCDC;
+    out property <color> ink-soft: #DCDCDC;
+    out property <color> ink-dim: #666666;
+    out property <color> accent: #0096FF;
+    out property <color> accent-hover: #0096FF;
+    out property <color> on-accent: #FFFFFF;
+    out property <color> border: #2A2A2A;
+    out property <color> border-input: #4B4B4B;
+    out property <color> danger: #E81123;
+    out property <color> video-bg: #000000;
+    out property <color> pill: #130B3Ccc;
+    out property <color> pill-hover: #191254e6;
+    out property <color> pill-edge: #1B1648;
+    out property <color> pill-edge-hover: #2C56C8;
+    out property <color> pill-divider: #2A265C;
+    out property <color> glow-blue: #07198C;
+    out property <color> glow-purple: #38066E;
+    out property <color> track: #333333;
+    out property <color> thumb-halo: #0096FF4D;
+    out property <color> side-handle-bg: #1E1E1ECC;
+    out property <color> side-handle-hover: #2A2A2AE6;
+    out property <color> badge-bg: #000000B8;
+    // control panel (S14)
+    out property <color> cp-rail: #333333;
+    out property <color> cp-body: #444444;
+    out property <color> cp-border: #555555;
+    out property <color> cp-input: #2C2C2C;
+    out property <color> cp-track: #E0E0E0;
+    // menus
+    out property <color> menu-bg: #333333;
+    out property <color> menu-edge: #3C3C3C;
+    out property <color> menu-separator: #444444;
+    out property <color> menu-ink: #E6E6E6;
+    out property <color> menu-ink-disabled: #6B6B6B;
+    out property <color> menu-header: #8A8A8A;
+    out property <color> menu-navy: #005EFF1B;
+    out property <color> menu-navy-edge: #005CFF32;
+    out property <color> menu-navy-hover: #0096FF;
+    out property <color> scrim: #111111e6;
+    out property <color> scrim-top: #111111d0;
+    out property <color> scrim-clear: #11111100;
+
+    // layout sizes
+    out property <length> window-width: 800px;
+    out property <length> window-height: 540px;
+    out property <length> title-bar-height: 40px;
+    out property <length> control-bar-height: 50px;
+    out property <length> play-button-size: 36px;
+    out property <length> icon-button-size: 28px;
+    out property <length> icon-size: 16px;
+    out property <length> stop-size: 11px;
+    out property <length> prev-next-size: 13px;
+    out property <length> time-width: 150px;
+    out property <length> seek-track: 3px;
+    out property <length> seek-track-hover: 5px;
+    out property <length> seek-hit: 14px;
+    out property <length> seek-halo: 16px;
+    out property <length> seek-dot: 10px;
+    out property <length> play-ring: 1.8px;
+    out property <length> playlist-width: 260px;
+    out property <length> playlist-header: 45px;
+    out property <length> playlist-row: 36px;
+    out property <length> playlist-thumb-row: 70px;
+    out property <length> thumb-width: 72px;
+    out property <length> thumb-height: 54px;
+    out property <length> side-handle-width: 18px;
+    out property <length> side-handle-height: 48px;
+    out property <length> cp-width: 366px;
+    out property <length> cp-height: 298px;
+    out property <length> cp-rail-width: 84px;
+    out property <length> osd-height: 36px;
+    out property <length> home-logo-width: 120px;
+    out property <length> home-logo-height: 205px;
+    out property <length> pill-height: 40px;
+    out property <length> pill-width: 150px;
+    out property <length> pill-arrow-width: 8px;
+    out property <length> pill-arrow-height: 5px;
+    out property <length> menu-row: 30px;
+    out property <length> menu-text-x: 32px;
+    out property <length> title-logo: 13.5px;
+
+    // spacing (4px base)
+    out property <length> space-1: 4px;
+    out property <length> space-2: 8px;
+    out property <length> space-3: 12px;
+    out property <length> space-4: 16px;
+    out property <length> space-5: 20px;
+    out property <length> space-6: 24px;
+    out property <length> space-8: 32px;
+
+    // corners
+    out property <length> radius-sm: 2px;
+    out property <length> radius-md: 4px;
+    out property <length> radius-lg: 8px;
+
+    // type
+    out property <string> font-display: "Microsoft YaHei";
+    out property <string> font-text: "Microsoft YaHei";
+    out property <length> type-display: 22px;
+    out property <length> type-h2: 14px;
+    out property <length> type-body: 12px;
+    out property <length> type-small: 12px;
+    out property <length> type-tiny: 10px;
+    out property <length> type-time: 11px;
+    out property <length> type-title: 12px;
+    out property <color> title-ink: #CACACA;
+    out property <color> time-ink: #EFEFEF;
+
+    // motion
+    out property <duration> motion-fast: 120ms;
+    out property <duration> motion-base: 200ms;
+}
